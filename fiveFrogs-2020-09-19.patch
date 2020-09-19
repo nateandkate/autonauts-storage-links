@@ -1,0 +1,1458 @@
+Index: Assets/Scripts/GameState/GameStateEdit.cs
+===================================================================
+--- Assets/Scripts/GameState/GameStateEdit.cs	(revision 6413)
++++ Assets/Scripts/GameState/GameStateEdit.cs	(working copy)
+@@ -970,7 +970,7 @@
+     }
+ 
+     void UpdateAdd()
+-    {
++    {   
+         if (!m_EventSystem.IsUIInFocus())
+         {
+             bool TargetFound = false;
+@@ -1067,7 +1067,7 @@
+                             {
+                                 // are we start a click/drag object
+                                 if (Building.GetIsTypeDragable(m_CurrentObjectType))
+-                                {
++                                {  
+                                     m_DragStartPosition = TilePosition;
+                                     SetState(State.Drag);
+                                 }
+@@ -2098,6 +2098,12 @@
+                 MapManager.Instance.AddBuilding(NewBuilding);
+ 
+                 DragNewBuldings.Add(NewBuilding);
++
++                // Modcallback
++                if (!SaveLoadManager.Instance.m_Loading && NewBuilding != null)
++                {
++                    ModManager.Instance.CheckBuildingTypeSpawnedCallback(NewBuilding);
++                }
+             }
+         }
+ 
+@@ -2370,7 +2376,7 @@
+             bool TargetFound = false;
+ 
+             UpdateBinIconPosition(true);
+-
++            
+             // try to find a building
+             Actionable TargetObject = null;
+             TileCoord TilePosition = new TileCoord();
+Index: Assets/Scripts/ModSystem/ModBase.cs
+===================================================================
+--- Assets/Scripts/ModSystem/ModBase.cs	(revision 6413)
++++ Assets/Scripts/ModSystem/ModBase.cs	(working copy)
+@@ -554,7 +554,95 @@
+         return false;
+     }
+ 
++    /// See if a mod method exists.
++    /// @version ?????
++    /// @param string - ClassName
++    /// @param string - MethodName
++    /// @return Boolean - true if class and method exist
++    /// \par Example
++    /// \par
++    /// ModBase.ClassAndMethodExist('ModBuilding','SomeBuildingFunction')
++    /// \note
++    /// Can be used in functions: AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public bool ClassAndMethodExist(string ClassName, string MethodName)
++    {
++        var myClassType = System.Type.GetType(ClassName);
++        if (myClassType == null) return false;
++        object instance =  System.Activator.CreateInstance(myClassType);
++        return myClassType.GetMethod(MethodName) != null;
++    }
+ 
++    /// Register for a callback when item of type spawned
++    /// @version ?????
++    /// @param ObjectType - String - The 'Type' of object
++    /// @param Callback - Function to be called when building is destroyed
++    /// @return none
++    /// \par Example
++    /// \par
++    /// ModBase.RegisterForItemTypeSpawnedCallback(ObjectType, CallbackFunction)
++    /// \par
++    /// CallbackFunction will be called like: CallbackFunction(ObjectUID, ObjectType, TileX, TileY)
++    /// \note
++    /// Can be used in functions: Creation(), BeforeLoad(), AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public void RegisterForItemTypeSpawnedCallback(string NewTypeString, DynValue Callback)
++    {
++        // Debug.Log("RegisterForItemTypeSpawnedCallback: NewTypeString: " + NewTypeString);
++        // Convert to Item Type and test
++        ObjectType NewType = ObjectType.Nothing;
++        if (!System.Enum.TryParse<ObjectType>(NewTypeString, out NewType))
++        {
++            // Not found - check extra Mod items
++            NewType = ModManager.Instance.GetModObjectTypeFromName(NewTypeString);
++        }
++        if (NewType == ObjectType.Nothing)
++        {
++            // Error
++            string ErrorMsg = "Error: ModBase.RegisterForItemTypeSpawnedCallback: type '" + NewTypeString + "' - Not Found";
++            ModManager.Instance.SetErrorLua(ModManager.ErrorState.Error_Misc, ErrorMsg);
++            return;
++        }
++
++        if (!ModManager.Instance.ItemTypeSpawnedCallbacks.ContainsKey(NewTypeString))
++        {
++            ModManager.Instance.ItemTypeSpawnedCallbacks.Add(NewTypeString, new List<ModManager.MinimalCallbackData>());
++        }
++
++        List<ModManager.MinimalCallbackData> Dats = ModManager.Instance.ItemTypeSpawnedCallbacks[NewTypeString];
++
++        ModManager.Instance.AddOrOverwriteCallbackInList(ref Dats, Callback);
++        
++        return;
++    }
++
++    /// Unregister for all "Item type spawned" related to an item type
++    /// @version ?????
++    /// @param TypeString - string - the type we no longer watch for
++    /// @return none
++    /// \par Example
++    /// \par
++    /// ModBase.UnregisterForItemTypeSpawnedCallback(TypeString)
++    /// \note
++    /// Can be used in functions: Creation(), BeforeLoad(), AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public void UnregisterForItemTypeSpawnedCallback(string TypeString)
++    {
++
++        // Debug.Log("UnregisterForItemTypeSpawnedCallback: TypeString: " + TypeString);
++
++        if (ModManager.Instance.ItemTypeSpawnedCallbacks.ContainsKey(TypeString))
++        {
++            // List of mod callbacks for this index (x,y)
++            List<ModManager.MinimalCallbackData> Dats = ModManager.Instance.ItemTypeSpawnedCallbacks[TypeString];
++
++            // Remove matching entry from list (matched on OwnerScript)
++            ModManager.Instance.RemoveCallbackFromList(ref Dats);
++
++            // If list is empty, remove master dicitonary
++            if (Dats.Count == 0) ModManager.Instance.ItemTypeSpawnedCallbacks.Remove(TypeString);
++        }
++
++        return;
++    }
++
+     /*----------------------------------------- INTERNAL -----------------------------------------*/
+ 
+     // Checks file for what has spawned, creates file if not/new addition
+@@ -614,4 +702,5 @@
+         }
+         return false;
+     }
++
+ }
+Index: Assets/Scripts/ModSystem/ModBuilding.cs
+===================================================================
+--- Assets/Scripts/ModSystem/ModBuilding.cs	(revision 6413)
++++ Assets/Scripts/ModSystem/ModBuilding.cs	(working copy)
+@@ -759,7 +759,7 @@
+         }
+     }
+ 
+-    /// Set a building rotation
++    /// Get a building rotation
+     /// @version 137.21
+     /// @param UID - Number (integer) - The unique ID of the building object - Required
+     /// @return int - The rotation of the building between 0 and 3 (or -1 if there's an error)
+@@ -781,4 +781,323 @@
+             return -1;
+         }
+     }
++
++    /// Get boolean of if building can be saved (is not a temp building)
++    /// @version ?????
++    /// @param UID - Number (integer) - The unique ID of the building object - Required
++    /// @return bool - whether or not the UID is a saveable building
++    /// \par Example
++    /// \par
++    /// IsDragging = ModBuilding.IsBuildingSaveable(ObjID)
++    /// \note.
++    /// Can be used in functions: OnUpdate()
++    public bool IsBuildingSaveable(int UID)
++    {
++        Building NewBuilding = GetBuildingFromUID(UID);
++        if (NewBuilding == null) {
++            Debug.Log("IsBuildingSaveable: NewBuilding is null!");
++            return false;
++        }
++
++        if (NewBuilding.GetType().GetProperty("m_ParentBuilding") != null) 
++        {
++            return NewBuilding.m_ParentBuilding.GetIsSavable();
++        }
++        else 
++        {
++            return NewBuilding.GetIsSavable();
++        }
++    }
++
++    /// Register for a building edited callback
++    /// @version ?????
++    /// @param BuildingUID - Number (integer) - The unique ID of the building object - Required
++    /// @param Callback - Function to be called when building is edited (EditType: Rotate, Move, Rename, Destroy)
++    /// @return none
++    /// \par Example
++    /// \par
++    /// ModBuilding.RegisterForBuildingEditedCallback(BuildingUID, CallbackFunction)
++    /// \par
++    /// CallbackFunction will be called like: CallbackFunction(BuildingUID, EditType, NewValue)
++    /// \note
++    /// Can be used in functions: Creation(), BeforeLoad(), AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public void RegisterForBuildingEditedCallback(int BuildingUID, DynValue Callback)
++    {
++        // Debug.Log("RegisterForBuildingEditedCallback: BuildingUID: "+BuildingUID);
++        Building BuildingObj = GetBuildingFromUID(BuildingUID);
++        if (BuildingObj == null)
++        {
++            return;
++        }
++
++        // If callback does not already exist for this building
++        if (!ModManager.Instance.BuildingEditedCallbacks.ContainsKey(BuildingUID))
++        {
++            ModManager.Instance.BuildingEditedCallbacks.Add(BuildingUID, new List<ModManager.MinimalCallbackData>());
++        }
++
++        // List of mod callbacks for this index (x,y)
++        List<ModManager.MinimalCallbackData> Dats = ModManager.Instance.BuildingEditedCallbacks[BuildingUID];
++
++        ModManager.Instance.AddOrOverwriteCallbackInList(ref Dats, Callback);
++
++        return;
++    }
++
++    /// Unregister for a building edited callback
++    /// @version ?????
++    /// @param BuildingUID - Number (integer) - The unique ID of the building object - Required
++    /// @return none
++    /// \par Example
++    /// \par
++    /// ModBuilding.UnregisterForBuildingEditedCallback(BuildingUID)
++    /// \note
++    /// Can be used in functions: Creation(), BeforeLoad(), AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public void UnregisterForBuildingEditedCallback(int BuildingUID)
++    {
++        if (ModManager.Instance.BuildingEditedCallbacks.ContainsKey(BuildingUID))
++        {
++            ModManager.Instance.BuildingEditedCallbacks.Remove(BuildingUID);
++        }
++
++        return;
++    }
++
++    /// Register a callback for when a building is moved into or created within a specific area
++    /// @version ?????
++    /// @param int - StartX
++    /// @param int - StartY
++    /// @param int - EndX
++    /// @param int - EndY
++    /// @param CallbackFunction - Function - The function to callback to on event - Required
++    /// @return None
++    /// \par Example
++    /// \par
++    /// ModBuilding.RegisterForNewBuildingInAreaCallback(StartX, StartY, EndX, EndY, NewBuildingInAreaCallback)
++    /// \par
++    /// Callback return : function NewBuildingInAreaCallback(BuildingUID, IsBlueprint, IsDragging)
++    /// \note
++    /// Can be used in functions: AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public void RegisterForNewBuildingInAreaCallback(int StartX, int StartY, int EndX, int EndY, DynValue Callback)
++    {
++        // Debug.Log("RegisterForNewBuildingInAreaCallback: StartX: "+StartX+", StartY:"+StartY+", EndX"+EndX+", EndY:"+EndY);
++        // Check limits of map
++        if (StartX < 0 || StartY < 0 || StartX >= TileManager.Instance.m_TilesWide || StartY >= TileManager.Instance.m_TilesHigh)
++            return;
++        if (EndX < 0 || EndY < 0 || EndX >= TileManager.Instance.m_TilesWide || EndY >= TileManager.Instance.m_TilesHigh)
++            return;
++        
++        // Loop and add dictionary entry for each tile
++        int Index;
++
++        // Create dictionary entry for each tile in area
++        for (int xPos = StartX; xPos <= EndX; ++xPos)
++        {
++            for (int yPos = StartY; yPos <= EndY; ++yPos)
++            {
++                // Calculate Index
++                Index = yPos * TileManager.Instance.m_TilesWide + xPos;
++
++                if (!ModManager.Instance.NewBuildingInAreaCallbacks.ContainsKey(Index))
++                {
++                    ModManager.Instance.NewBuildingInAreaCallbacks.Add(Index, new List<ModManager.MinimalCallbackData>());
++                }
++
++                // List of mod callbacks for this tile
++                List<ModManager.MinimalCallbackData> Dats = ModManager.Instance.NewBuildingInAreaCallbacks[Index];
++
++                // Add into list as needed
++                ModManager.Instance.AddOrOverwriteCallbackInList(ref Dats, Callback);
++            }
++        } 
++    }
++
++    /// Unregister a callback for when a building is moved into or created within a specific area
++    /// @version ?????
++    /// @param int - StartX
++    /// @param int - StartY
++    /// @param int - EndX
++    /// @param int - EndY
++    /// @return None
++    /// \par Example
++    /// \par
++    /// ModBuilding.UnregisterForNewBuildingInAreaCallback(TileX, TileY)
++    /// \note
++    /// Can be used in functions: AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public void UnregisterForNewBuildingInAreaCallback(int StartX, int StartY, int EndX, int EndY)
++    {
++        // Debug.Log("UnregisterForNewBuildingInAreaCallback: StartX: "+StartX+", StartY:"+StartY+", EndX"+EndX+", EndY:"+EndY);
++        // Loop and add dictionary entry for each tile
++        int Index;
++
++        // Create dictionary entry for each tile in area
++        for (int xPos = StartX; xPos < EndX; ++xPos)
++        {
++            for (int yPos = StartY; yPos < EndY; ++yPos)
++            {
++                // Calculate Index
++                Index = yPos * TileManager.Instance.m_TilesWide + xPos;
++
++                // If Dictionary contains key (for ownerscript), delete it.
++                if (ModManager.Instance.NewBuildingInAreaCallbacks.ContainsKey(Index))
++                {
++                    // List of mod callbacks for this index (x,y)
++                    List<ModManager.MinimalCallbackData> Dats = ModManager.Instance.NewBuildingInAreaCallbacks[Index];
++
++                    // Remove matching entry from list (matched on OwnerScript)
++                    ModManager.Instance.RemoveCallbackFromList(ref Dats);
++
++                    // If list is empty, remove master dicitonary
++                    if (Dats.Count == 0) ModManager.Instance.NewBuildingInAreaCallbacks.Remove(Index);
++                }
++            }
++        } 
++    }
++
++    /// Register for a callback when building of type spawned
++    /// @version ?????
++    /// @param ObjectType - String - The 'Type' of building
++    /// @param Callback - Function to be called when building is destroyed
++    /// @return none
++    /// \par Example
++    /// \par
++    /// ModBuilding.RegisterForBuildingTypeSpawnedCallback(ObjectType, CallbackFunction)
++    /// \par
++    /// CallbackFunction will be called like: CallbackFunction(BuildingUID, BuildingType)
++    /// \note
++    /// Can be used in functions: Creation(), BeforeLoad(), AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public void RegisterForBuildingTypeSpawnedCallback(string NewTypeString, DynValue Callback)
++    {
++        // Debug.Log("RegisterForBuildingTypeSpawnedCallback: NewTypeString: " + NewTypeString);
++        // Convert to Item
++        ObjectType NewType = ObjectType.Nothing;
++        if (!System.Enum.TryParse<ObjectType>(NewTypeString, out NewType))
++        {
++            // Not found - check extra Mod items
++            NewType = ModManager.Instance.GetModObjectTypeFromName(NewTypeString);
++        }
++        if (NewType == ObjectType.Nothing)
++        {
++            // Error
++            string ErrorMsg = "Error: ModBuilding.RegisterForBuildingTypeSpawnedCallback: type '" + NewTypeString + "' - Not Found";
++            ModManager.Instance.SetErrorLua(ModManager.ErrorState.Error_Misc, ErrorMsg);
++            // Debug.Log("RegisterForBuildingTypeSpawnedCallback: Error: " + ErrorMsg);
++            return;
++        }
++
++        // If callback does not already exist for this building type
++        if (!ModManager.Instance.BuildingTypeSpawnedCallbacks.ContainsKey(NewType))
++        {
++            // Add empty list
++            ModManager.Instance.BuildingTypeSpawnedCallbacks.Add(NewType, new List<ModManager.MinimalCallbackData>());
++        }
++
++        // List of mod callbacks for this NewType
++        List<ModManager.MinimalCallbackData> Dats = ModManager.Instance.BuildingTypeSpawnedCallbacks[NewType];
++
++        ModManager.Instance.AddOrOverwriteCallbackInList(ref Dats, Callback);
++
++        return;
++    }
++
++    /// Request list of types that can be added to this building
++    /// @version ?????
++    /// @param UID - Number (integer) - The unique ID of the building object - Required
++    /// @return table - Table of remaining requirements
++    /// \par Example
++    /// \par
++    /// CurrentRequirements = ModBuilding.BuildingRequirements(ObjID)
++    /// Returns a table like { {'Log', 4, 2}, {'Water', 4, 0} } // Type, Target, Current.
++    /// \note.
++    /// Can be used in functions: OnUpdate()
++    public DynValue[][] BuildingRequirements(int UID)
++    {
++        BaseClass ActualObject = ObjectTypeList.Instance.GetObjectFromUniqueID(UID);
++        if (ActualObject != null)
++        {
++            Converter ConverterObj = ActualObject.GetComponent<Converter>();
++            if (ConverterObj != null)
++            {
++                // Get requirements for converter
++                int Index = ConverterObj.m_ResultsToCreate;
++                List<IngredientRequirement> Requirements = ConverterObj.m_Requirements[Index];
++                if (Requirements != null)
++                {
++                    DynValue[][] TypeMap = new DynValue[Requirements.Count][];
++
++                    for (int i = 0; i < Requirements.Count; i++)
++                    {
++                        // what object type do we need
++                        ObjectType RequiredType = Requirements[i].m_Type;
++                        
++                        // how many do we need
++                        int Target = Requirements[i].m_Count;
++                        
++                        // how many have been added so far
++                        int Count = ConverterObj.GetIngredientCount(RequiredType);
++
++                        // Add it onto array
++                        TypeMap[i] = new DynValue[] {
++                            DynValue.NewString(RequiredType.ToString()),
++                            DynValue.NewNumber(Target),
++                            DynValue.NewNumber(Count),
++                        };
++                    }
++
++                    // send it back to mod
++                    return TypeMap;
++                }
++                return null;
++            }
++            else
++            {
++                // Error
++                string ErrorMsg = "Error: ModBuilding.BuildingRequirements UID: '" + UID + "' - is not of type Converter, Fueler, TrainStationRefiller";
++                ModManager.Instance.SetErrorLua(ModManager.ErrorState.Error_Misc, ErrorMsg);
++                return null;
++            }
++        }
++        else
++        {
++            // Error
++            string ErrorMsg = "Error: ModBuilding.BuildingRequirements UID: '" + UID + "' - Not Found";
++            ModManager.Instance.SetErrorLua(ModManager.ErrorState.Error_Misc, ErrorMsg);
++            return null;
++        }
++    }
++
++    /// Register for a callback when building state changes
++    /// @version ?????
++    /// @param BuildingUID - Int - The UID of the building
++    /// @param Callback - Function to be called when building state changes
++    /// @return none
++    /// \par Example
++    /// \par
++    /// ModBuilding.RegisterForBuildingStateChangedCallback(BuildingUID, CallbackFunction)
++    /// \par
++    /// CallbackFunction will be called like: CallbackFunction(BuildingUID, NewState)
++    /// \note
++    /// Can be used in functions: OnUpdate()
++    public void RegisterForBuildingStateChangedCallback(int BuildingUID, DynValue Callback)
++    {
++        // Debug.Log("RegisterForBuildingStateChangeCallback: BuildingUID: "+BuildingUID);
++        Building BuildingObj = GetBuildingFromUID(BuildingUID);
++        if (BuildingObj == null)
++        {
++            return;
++        }
++
++        // If callback does not already exist for this building
++        if (!ModManager.Instance.BuildingStateChangedCallbacks.ContainsKey(BuildingUID))
++        {
++            ModManager.Instance.BuildingStateChangedCallbacks.Add(BuildingUID, new List<ModManager.MinimalCallbackData>());
++        }
++
++        // List of mod callbacks for this index (x,y)
++        List<ModManager.MinimalCallbackData> Dats = ModManager.Instance.BuildingStateChangedCallbacks[BuildingUID];
++
++        ModManager.Instance.AddOrOverwriteCallbackInList(ref Dats, Callback);
++
++        return;
++    }
+ }
+Index: Assets/Scripts/ModSystem/ModManager.cs
+===================================================================
+--- Assets/Scripts/ModSystem/ModManager.cs	(revision 6413)
++++ Assets/Scripts/ModSystem/ModManager.cs	(working copy)
+@@ -153,6 +153,8 @@
+         HoldablePickedUp,
+         HoldableDroppedOnGround,
+         AddedToConverter,
++        BuildingRenamed,
++        BuildingRepositioned,
+     };
+     // Callback Data
+     public struct CallbackData
+@@ -168,14 +170,29 @@
+     };
+     // Callbacks
+     List<CallbackData> ModCallbacks;
+-
++    // Minimal Callback Data
++    public struct MinimalCallbackData
++    {
++        // Script
++        public Script OwnerScript;
++        // Callback Type
++        public DynValue CallbackFunction;
++    }
+     // Storage Callbacks
+     public Dictionary<int, CallbackData> StorageAddedCallbacks;
+     public Dictionary<int, CallbackData> StorageRemovedCallbacks;
++    public Dictionary<int, List<MinimalCallbackData>> StorageItemChangedCallbacks;
++    // Building Callbacks
++    public Dictionary<int, List<MinimalCallbackData>> BuildingEditedCallbacks;
++    public Dictionary<int, List<MinimalCallbackData>> BuildingStateChangedCallbacks;
++    public Dictionary<ObjectType, List<MinimalCallbackData>> BuildingTypeSpawnedCallbacks;
++    public Dictionary<int, List<MinimalCallbackData>> NewBuildingInAreaCallbacks;
++    // Object Callbacks
++    public Dictionary<string, List<MinimalCallbackData>> ItemTypeSpawnedCallbacks;
++    // Tile Callbacks
++    public Dictionary<int, List<MinimalCallbackData>> PlayerOrBotEnterOrExitTileCallbacks;
++    public Dictionary<int, Tuple<int, int>> PlayerOrBotAlreadyAtTile;
+ 
+-
+-
+-
+     // New Mod Created
+     public void RegisterNewMod(Mod NewMod)
+     {
+@@ -212,6 +229,14 @@
+         ModCallbacks = new List<CallbackData>();
+         StorageAddedCallbacks = new Dictionary<int, CallbackData>();
+         StorageRemovedCallbacks = new Dictionary<int, CallbackData>();
++        StorageItemChangedCallbacks = new Dictionary<int, List<MinimalCallbackData>>();
++        BuildingEditedCallbacks = new Dictionary<int, List<MinimalCallbackData>>();
++        BuildingStateChangedCallbacks = new Dictionary<int, List<MinimalCallbackData>>();
++        BuildingTypeSpawnedCallbacks = new Dictionary<ObjectType, List<MinimalCallbackData>>();
++        NewBuildingInAreaCallbacks = new Dictionary<int, List<MinimalCallbackData>>();
++        ItemTypeSpawnedCallbacks = new Dictionary<string, List<MinimalCallbackData>>();
++        PlayerOrBotEnterOrExitTileCallbacks = new Dictionary<int, List<MinimalCallbackData>>();
++        PlayerOrBotAlreadyAtTile = new Dictionary<int, Tuple<int, int>>();
+ 
+         // Automatically register all MoonSharpUserData types
+         UserData.RegisterAssembly();
+@@ -295,6 +320,14 @@
+         // Reset any dictionaries that require object UIDs
+         StorageAddedCallbacks.Clear();
+         StorageRemovedCallbacks.Clear();
++        StorageItemChangedCallbacks.Clear();
++        BuildingEditedCallbacks.Clear();
++        BuildingStateChangedCallbacks.Clear();
++        BuildingTypeSpawnedCallbacks.Clear();
++        NewBuildingInAreaCallbacks.Clear();
++        ItemTypeSpawnedCallbacks.Clear();
++        PlayerOrBotEnterOrExitTileCallbacks.Clear();
++        PlayerOrBotAlreadyAtTile.Clear();
+     }
+ 
+     // Post Create all Scripts
+@@ -415,8 +448,6 @@
+                 ActualState == GameStateManager.State.MainMenu ||
+                 ActualState == GameStateManager.State.Start)
+             {
+-                Debug.Log(ActualState);
+-
+                 // Show Now
+                 LaunchErrorMessage();
+                 ShowErrorMessageWhenSafe = false;
+@@ -1082,4 +1113,268 @@
+             Dat.OwnerScript.Call(Dat.CallbackFunction, DynValue.NewNumber(ObjectUniqueID));
+         }
+     }
++
++    // Check Storage Removed Callbacks
++    public void CheckStorageItemChangedCallback(int ObjectUniqueID, string NewItemTypeStored)
++    {
++        // Debug.Log("CheckStorageItemChangedCallback : UniqueID " + ObjectUniqueID + ", Type " + NewItemTypeStored);
++        if (StorageItemChangedCallbacks.ContainsKey(ObjectUniqueID))
++        {
++            List<MinimalCallbackData> Dats = StorageItemChangedCallbacks[ObjectUniqueID];
++
++            DynValue[] Params = {
++                DynValue.NewNumber(ObjectUniqueID),
++                DynValue.NewString(NewItemTypeStored)
++            };
++
++            for (int i = 0; i < Dats.Count; i++) // Loop through List with for
++            {
++                Dats[i].OwnerScript.Call(Dats[i].CallbackFunction, Params);
++            }
++        }
++    }
++
++    // Check Building Edited Callback
++    public void CheckBuildingEditedCallback(Building BuildingInstance, String EditType, String NewValue = null)
++    {
++        // Debug.Log("CheckBuildingEditedCallback : BuildingInstance.m_UniqueID " + BuildingInstance.m_UniqueID + ", EditType " + EditType);
++        if (BuildingEditedCallbacks.ContainsKey(BuildingInstance.m_UniqueID))
++        {
++            DynValue ValueToPass;
++            if (EditType == "Rotate") // EditTypes: Rotate, Move, Rename, Destroy
++                ValueToPass = DynValue.NewNumber(BuildingInstance.m_Rotation);
++            else if (EditType == "Move") {
++                // I can't figure out how to get a Lua Table out of these coords, so I'm converting them to a string.
++                ValueToPass = DynValue.NewString(BuildingInstance.m_TileCoord.x + ":" + BuildingInstance.m_TileCoord.y);
++            }
++            else if (EditType == "Rename")
++                ValueToPass = DynValue.NewString(NewValue); // BuildingInstance.m_Name is protected
++            else
++                ValueToPass = DynValue.NewString(""); // blank string
++
++            DynValue[] Params = {
++                DynValue.NewNumber(BuildingInstance.m_UniqueID),
++                DynValue.NewString(EditType),
++                ValueToPass 
++            };
++
++            List<MinimalCallbackData> Dats = BuildingEditedCallbacks[BuildingInstance.m_UniqueID];
++
++            for (int i = 0; i < Dats.Count; i++) // Loop through List with for
++            {
++                Dats[i].OwnerScript.Call(Dats[i].CallbackFunction, Params);
++            }
++        }
++    }
++
++    // Check Building State Changed Callback
++    public void CheckBuildingStateChangedCallback(int m_UniqueID, String NewState)
++    {
++        // Debug.Log("CheckBuildingStateChangedCallback : m_UniqueID " + m_UniqueID );
++        if (BuildingStateChangedCallbacks.ContainsKey(m_UniqueID))
++        {
++            DynValue[] Params = {
++                DynValue.NewNumber(m_UniqueID),
++                DynValue.NewString(NewState) 
++            };
++
++            List<MinimalCallbackData> Dats = BuildingStateChangedCallbacks[m_UniqueID];
++
++            for (int i = 0; i < Dats.Count; i++) // Loop through List with for
++            {
++                Dats[i].OwnerScript.Call(Dats[i].CallbackFunction, Params);
++            }
++        }
++    }
++
++    // Check Building Type Spawned Callback
++    public void CheckBuildingTypeSpawnedCallback(Building BuildingInstance)
++    {
++        // Debug.Log("CheckBuildingTypeSpawnedCallback.m_UniqueID: " + BuildingInstance.m_UniqueID);
++        if (BuildingTypeSpawnedCallbacks.ContainsKey(BuildingInstance.m_TypeIdentifier))
++        {
++            Boolean IsDragging = GameStateEdit.Instance.CheckBuildingInDragModels(BuildingInstance);
++            
++            DynValue[] Params = {
++                DynValue.NewNumber(BuildingInstance.m_UniqueID),
++                DynValue.NewString(BuildingInstance.m_TypeIdentifier.ToString()),
++                DynValue.NewBoolean(BuildingInstance.m_Blueprint),
++                DynValue.NewBoolean(IsDragging),
++            };
++
++            // List of mod callbacks for this Building Type
++            List<ModManager.MinimalCallbackData> Dats = BuildingTypeSpawnedCallbacks[BuildingInstance.m_TypeIdentifier];
++
++            // Call all in the list
++            for (int i = 0; i < Dats.Count; i++) // Loop through List with for
++            {
++                Dats[i].OwnerScript.Call(Dats[i].CallbackFunction, Params);
++            }
++            
++        }
++        else
++        {
++            // Debug.Log("CheckBuildingTypeSpawnedCallback, does not contain an entry for : " + BuildingInstance.m_TypeIdentifier + ":" + BuildingInstance.m_TypeIdentifier.ToString());
++        }
++    }
++
++    // Check New Building In Area Callback
++    public bool CheckNewBuildingInAreaCallback(Building BuildingInstance, TileCoord Position)
++    {
++        int Index = Position.y * TileManager.Instance.m_TilesWide + Position.x;
++        bool positionWasWatched = false;
++        
++        if (NewBuildingInAreaCallbacks.ContainsKey(Index))
++        {
++            positionWasWatched = true;
++            Boolean IsDragging = GameStateEdit.Instance.CheckBuildingInDragModels(BuildingInstance);
++            DynValue[] Params = {
++                DynValue.NewNumber(BuildingInstance.m_UniqueID),
++                DynValue.NewBoolean(BuildingInstance.m_Blueprint),
++                DynValue.NewBoolean(IsDragging),
++            };
++
++            // List of mod callbacks for this Building Type
++            List<ModManager.MinimalCallbackData> Dats = NewBuildingInAreaCallbacks[Index];
++
++            // Call all in the list
++            for (int i = 0; i < Dats.Count; i++) // Loop through List with for
++            {
++                Dats[i].OwnerScript.Call(Dats[i].CallbackFunction, Params);
++            }
++        }
++        return positionWasWatched;
++    }
++
++    // Check New Object Type In Area Callback "CheckItemTypeSpawnedInAreaCallback"
++    public void CheckItemTypeSpawnedCallback(int ObjectUID, string OType, TileCoord Position)
++    {
++        if (ItemTypeSpawnedCallbacks.ContainsKey(OType))
++        {
++            List<MinimalCallbackData> Dats = ItemTypeSpawnedCallbacks[OType];
++
++            DynValue[] Params = {
++                DynValue.NewNumber(ObjectUID),
++                DynValue.NewString(OType),
++                DynValue.NewNumber(Position.x),
++                DynValue.NewNumber(Position.y),
++            };
++            for (int i = 0; i < Dats.Count; i++) // Loop through List with for
++            {
++                Dats[i].OwnerScript.Call(Dats[i].CallbackFunction, Params);
++            }
++        }
++    }
++
++    // Check New Object Type In Area Callback "CheckItemTypeSpawnedInAreaCallback"
++    public void CheckPlayerOrBotEnterOrExitTileCallback(TileCoord Position, int FarmerOrWorkerUID)
++    {
++        // Debug.Log("CheckPlayerOrBotEnterOrExitTileCallback: X: "+Position.x+", Y:"+Position.y + ", UID:"+FarmerOrWorkerUID);
++        // If this UID was already on a tile, then we should mark that it exited that prior tile.
++        if (PlayerOrBotAlreadyAtTile.ContainsKey(FarmerOrWorkerUID))
++        {
++            Tuple<int, int> Dat = PlayerOrBotAlreadyAtTile[FarmerOrWorkerUID];
++            int x = Dat.Item1;
++            int y = Dat.Item2;
++            PlayerOrBotAlreadyAtTile.Remove(FarmerOrWorkerUID);
++
++            int PriorIndex = y * TileManager.Instance.m_TilesWide + x;
++            
++            // Now check and call the callback for EXITING the tile
++            if (PlayerOrBotEnterOrExitTileCallbacks.ContainsKey(PriorIndex))
++            {
++                // List of mod callbacks for this Building Type
++                List<ModManager.MinimalCallbackData> Dats = PlayerOrBotEnterOrExitTileCallbacks[PriorIndex];
++
++                DynValue[] Params = {
++                    DynValue.NewNumber(FarmerOrWorkerUID),
++                    DynValue.NewNumber(x),
++                    DynValue.NewNumber(y),
++                    DynValue.NewBoolean(false),
++                };
++
++                // Call all in the list
++                for (int i = 0; i < Dats.Count; i++) // Loop through List with for
++                {
++                    Dats[i].OwnerScript.Call(Dats[i].CallbackFunction, Params);
++                }
++            }
++        }
++
++        // Check and callback for entring the new tile.
++
++        int Index = Position.y * TileManager.Instance.m_TilesWide + Position.x;
++
++        if (PlayerOrBotEnterOrExitTileCallbacks.ContainsKey(Index))
++        {
++            // Debug.Log("CheckPlayerOrBotEnterOrExitTileCallback: Found callback!");
++            // Add this Farmer/Worker to PlayerOrBotAlreadyAtTile (so we can track when they exit)
++            if (!PlayerOrBotAlreadyAtTile.ContainsKey(FarmerOrWorkerUID))
++            {
++                Tuple<int, int> pos = new Tuple<int, int>(Position.x, Position.y);
++                PlayerOrBotAlreadyAtTile.Add(FarmerOrWorkerUID, pos );
++            }
++
++            // List of mod callbacks for this Building Type
++            List<ModManager.MinimalCallbackData> Dats = PlayerOrBotEnterOrExitTileCallbacks[Index];
++
++            // Call all in the list
++            for (int i = 0; i < Dats.Count; i++) // Loop through List with for
++            {
++                // Now call the mod callback
++                DynValue[] Params = {
++                    DynValue.NewNumber(FarmerOrWorkerUID),
++                    DynValue.NewNumber(Position.x),
++                    DynValue.NewNumber(Position.y),
++                    DynValue.NewBoolean(true),
++                };
++                Dats[i].OwnerScript.Call(Dats[i].CallbackFunction, Params);
++            }
++        }
++    }
++
++    // Utility function for ADDING or OVERWRITING an element in a list, given the 'OwnerScript' to compare it to.
++    public void AddOrOverwriteCallbackInList(ref List<MinimalCallbackData> Dats, DynValue Callback)
++    {
++        Script OwnerScript = GetLastCalledScript();
++
++        bool CallbackExists = false;
++
++        // Overwrite callback if it already exists for same OwnerScript
++        for (int i = 0; i < Dats.Count; i++) // Loop through List with for
++        {
++            if (Dats[i].OwnerScript == OwnerScript)
++            {
++                CallbackExists = true;
++                ModManager.MinimalCallbackData Data;
++                Data.CallbackFunction = Callback;
++                Data.OwnerScript = OwnerScript;
++                Dats[i] = Data;
++            }
++        }
++
++        // Add it if it didn't exist.
++        if (!CallbackExists)
++        {
++            ModManager.MinimalCallbackData Data;
++            Data.CallbackFunction = Callback;
++            Data.OwnerScript = OwnerScript;
++            Dats.Add(Data);
++        }
++
++        return;
++    }
++
++    public void RemoveCallbackFromList(ref List<MinimalCallbackData> Dats)
++    {
++        // Owner Script (used as key)
++        Script OwnerScript = ModManager.Instance.GetLastCalledScript();
++
++        // Remove if it exists for this OwnerScript
++        for (int i = 0; i < Dats.Count; i++) // Loop through List with for
++        {
++            if (Dats[i].OwnerScript == OwnerScript) Dats.RemoveAt(i); 
++        }
++    }
++
+ }
+Index: Assets/Scripts/ModSystem/ModObject.cs
+===================================================================
+--- Assets/Scripts/ModSystem/ModObject.cs	(revision 6413)
++++ Assets/Scripts/ModSystem/ModObject.cs	(working copy)
+@@ -799,5 +799,4 @@
+         return false;
+     }
+ 
+-
+ }
+Index: Assets/Scripts/ModSystem/ModStorage.cs
+===================================================================
+--- Assets/Scripts/ModSystem/ModStorage.cs	(revision 6413)
++++ Assets/Scripts/ModSystem/ModStorage.cs	(working copy)
+@@ -512,6 +512,45 @@
+         }
+     }
+ 
++    /// Register a callback for on Storage Item Changed, fires callback when object type stored within, changes
++    /// @version ??????
++    /// @param StorageUID - Number (integer) - The unique ID of the storage object - Required
++    /// @param CallbackFunction - Function - The function to callback to on event - Required
++    /// @return None
++    /// \par Example
++    /// \par
++    /// ModStorage.RegisterForStorageItemChangedCallback(StorageID, StorageItemChangedCallbackFunction)
++    /// \par
++    /// Callback return : function StorageItemChangedCallbackFunction(StorageID, NewItemType) -- Returns the UID of the building and new type of item stored.
++    /// \note
++    /// Can be used in functions: AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public void RegisterForStorageItemChangedCallback(int StorageUID, DynValue Callback)
++    {
++        // Debug.Log("RegisterForStorageItemChangedCallback : UniqueID " + StorageUID + ".");
++        // Check UID is storage item
++        BaseClass ActualStorageObject = ObjectTypeList.Instance.GetObjectFromUniqueID(StorageUID);
++        Storage StorageItem = ActualStorageObject.GetComponent<Storage>();
++        if (StorageItem == null)
++        {
++            // Error
++            string ErrorMsg = "Error: ModStorage.RegisterForStorageItemChangedCallback '" + StorageUID + "' - is not of type Storage";
++            ModManager.Instance.SetErrorLua(ModManager.ErrorState.Error_Misc, ErrorMsg);
++            return;
++        }
++
++        // Does it exist?
++        if (!ModManager.Instance.StorageItemChangedCallbacks.ContainsKey(StorageUID))
++        {
++            // Add empty list
++            ModManager.Instance.StorageItemChangedCallbacks.Add(StorageUID, new List<ModManager.MinimalCallbackData>());
++        }
++
++        // List of mod callbacks
++        List<ModManager.MinimalCallbackData> Dats = ModManager.Instance.StorageItemChangedCallbacks[StorageUID];
++
++        ModManager.Instance.AddOrOverwriteCallbackInList(ref Dats, Callback);
++    }
++
+     /// Assign the object type of provided storage
+     /// @version 137.19
+     /// @param StorageUID - Number (integer) - The unique ID of the storage object - Required
+@@ -550,4 +589,29 @@
+         }
+         return false;
+     }
++
++    /// Check if a UID is a storage
++    /// @version ?????
++    /// @param UID - Int - The UID to query 
++    /// @return Boolean - Returns true if it is a valid storage. 
++    /// \par Example
++    /// \par
++    /// IsAValidStorage = ModStorage.IsValidStorage(123456)
++    /// \note
++    /// Can be used in functions: AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public bool IsStorageUIDValid(int UID)
++    {
++        BaseClass ActualObject = ObjectTypeList.Instance.GetObjectFromUniqueID(UID);
++        if (ActualObject == null)
++        {
++            return false;
++        }
++        Storage StorageItem = ActualObject.GetComponent<Storage>();
++        if (StorageItem == null)
++        {
++            return false;
++        }
++
++        return true;
++    }
+ }
+Index: Assets/Scripts/ModSystem/ModTiles.cs
+===================================================================
+--- Assets/Scripts/ModSystem/ModTiles.cs	(revision 6413)
++++ Assets/Scripts/ModSystem/ModTiles.cs	(working copy)
+@@ -636,4 +636,78 @@
+         return AllObjects;
+     }
+ 
++    // RegisterForPlayerOrBotEnterOrExitTile
++    /// Register a callback for when the player or bot enters or exits a designated area
++    /// @version ?????
++    /// @param int - TileX
++    /// @param int - TileY
++    /// @param CallbackFunction - Function - The function to callback to on event - Required
++    /// @return FALSE if out of bounds, TRUE otherwise.
++    /// \par Example
++    /// \par
++    /// ModTile.RegisterForPlayerOrBotEnterOrExitTile(UniqueID, TileX, TileY, CallbackFunction)
++    /// \par
++    /// Callback example: function CallbackFunction(ActorUID, X, Y, DidEnter, IsPlayer)
++    /// \note
++    /// Can be used in functions: AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public bool RegisterForPlayerOrBotEnterOrExitTile(int TileX, int TileY, DynValue Callback)
++    {
++        // Debug.Log("RegisterForPlayerOrBotEnterOrExitTile: TileX: "+TileX+", TileY:"+TileY);
++        // Check limits of map
++        if (TileX < 0 || TileY < 0 || TileX >= TileManager.Instance.m_TilesWide || TileY >= TileManager.Instance.m_TilesHigh)
++            return false;
++        
++        // Calculate Index
++        int Index = TileY * TileManager.Instance.m_TilesWide + TileX;
++
++        // If callbacks does not already have a list for this index
++        if (!ModManager.Instance.PlayerOrBotEnterOrExitTileCallbacks.ContainsKey(Index))
++        {
++            ModManager.Instance.PlayerOrBotEnterOrExitTileCallbacks.Add(Index, new List<ModManager.MinimalCallbackData>());
++        }
++
++        // List of mod callbacks for this index (x,y)
++        List<ModManager.MinimalCallbackData> Dats = ModManager.Instance.PlayerOrBotEnterOrExitTileCallbacks[Index];
++
++        ModManager.Instance.AddOrOverwriteCallbackInList(ref Dats, Callback);
++
++        return true;
++    }
++
++    // UnregisterForPlayerOrBotEnterOrExitTile
++    /// Register a callback for when the player or bot enters or exits a designated area
++    /// @version ?????
++    /// @param int - TileX
++    /// @param int - TileY
++    /// @return FALSE if out of bounds, TRUE otherwise.
++    /// \par Example
++    /// \par
++    /// ModTile.UnregisterForPlayerOrBotEnterOrExitTile(UniqueID, TileX, TileY, CallbackFunction)
++    /// \note
++    /// Can be used in functions: AfterLoad(), AfterLoad_CreatedWorld(), AfterLoad_LoadedWorld(), OnUpdate()
++    public bool UnregisterForPlayerOrBotEnterOrExitTile(int TileX, int TileY)
++    {
++        // Debug.Log("UnregisterForPlayerOrBotEnterOrExitTile: TileX: "+TileX+", TileY:"+TileY);
++        // Check limits of map
++        if (TileX < 0 || TileY < 0 || TileX >= TileManager.Instance.m_TilesWide || TileY >= TileManager.Instance.m_TilesHigh)
++            return false;
++        
++        // Calculate Index
++        int Index = TileY * TileManager.Instance.m_TilesWide + TileX;
++
++        if (ModManager.Instance.PlayerOrBotEnterOrExitTileCallbacks.ContainsKey(Index))
++        {
++            // List of mod callbacks for this index (x,y)
++            List<ModManager.MinimalCallbackData> Dats = ModManager.Instance.PlayerOrBotEnterOrExitTileCallbacks[Index];
++
++            // Remove matching entry from list (matched on OwnerScript)
++            ModManager.Instance.RemoveCallbackFromList(ref Dats);
++
++            // If list is empty, remove master dicitonary
++            if (Dats.Count == 0) ModManager.Instance.PlayerOrBotEnterOrExitTileCallbacks.Remove(Index);
++        }
++
++        return true;
++    }
++
+ }
+\ No newline at end of file
+Index: Assets/Scripts/World/BuildingManager.cs
+===================================================================
+--- Assets/Scripts/World/BuildingManager.cs	(revision 6413)
++++ Assets/Scripts/World/BuildingManager.cs	(working copy)
+@@ -10,7 +10,7 @@
+     public int m_NewRotation;
+     public List<TileCoordObject> m_OutputObjects;
+ 
+-    public int m_SortValue;                 // used when moving a group of buildings
++    public int m_SortValue;                 // used when moving a group of buildings
+ 
+     public MovingBuilding(int Index, Building NewBuilding, TileCoord NewPosition, int NewRotation)
+     {
+@@ -268,11 +268,31 @@
+         {
+             NewMoving.MoveOutputObjects();
+         }
++
++        // Mod Callback
++        foreach (MovingBuilding NewMoving in MovingList)
++        {
++            if (NewMoving.GetType().GetProperty("m_ParentBuilding") != null) 
++            {
++                if (NewMoving.m_Building.m_ParentBuilding.GetIsSavable())
++                {
++                    ModManager.Instance.CheckBuildingEditedCallback(NewMoving.m_Building.m_ParentBuilding, "Move");
++                }
++            }
++            else 
++            {
++                if (NewMoving.m_Building.GetIsSavable())
++                {
++                    ModManager.Instance.CheckBuildingEditedCallback(NewMoving.m_Building, "Move");
++                }
++            }
++        }
++
+     }
+ 
+-    public void MoveBuilding(Building NewBulding, TileCoord NewPosition, int NewRotation)
++    public void MoveBuilding(Building NewBuilding, TileCoord NewPosition, int NewRotation)
+     {
+-        MovingBuilding NewMoving = new MovingBuilding(0, NewBulding, NewPosition, NewRotation);
++        MovingBuilding NewMoving = new MovingBuilding(0, NewBuilding, NewPosition, NewRotation);
+         List<MovingBuilding> MovingList = new List<MovingBuilding>();
+         MovingList.Add(NewMoving);
+         MoveBuildings(MovingList);
+@@ -383,6 +403,9 @@
+ 
+         NewBuilding.StopUsing(false);
+ 
++        // Mod callback
++        ModManager.Instance.CheckBuildingEditedCallback(NewBuilding, "Destroy");
++
+         return true;
+     }
+ 
+@@ -485,6 +508,12 @@
+         if (NewBuilding)
+             RefreshBuilding(NewBuilding);
+ 
++        // Mod Callback -- never makes it here for MOD buildings!!!
++        if (!SaveLoadManager.Instance.m_Loading)
++        {
++            ModManager.Instance.CheckBuildingTypeSpawnedCallback(NewBuilding);
++        }
++
+         return NewBuilding;
+     }
+ 
+Index: Assets/Scripts/World/MapManager.cs
+===================================================================
+--- Assets/Scripts/World/MapManager.cs	(revision 6413)
++++ Assets/Scripts/World/MapManager.cs	(working copy)
+@@ -73,11 +73,11 @@
+     {
+         if (NewBuilding == null)
+             return;
+-
++        
+         Building AddBuilding = NewBuilding;
+         if (!Add)
+             AddBuilding = null;
+-
++        
+         // is this a Floor building
+         bool IsFloor = false;
+         if (NewBuilding.GetComponent<Floor>())
+@@ -200,6 +200,20 @@
+             if (BottomBuilding)
+                 BottomBuilding.TestBuildingHeight();
+         }
++
++        // Mod Callbacks
++        if (!SaveLoadManager.Instance.m_Loading && Add)
++        {
++            foreach (TileCoord Position in BuildTiles.m_Tiles)
++            {
++                if (!Position.GetIsValid() || Position == AccessPosition || Position == SpawnPosition)
++                    continue;
++
++                // only trigger this once if it returns true
++                if (ModManager.Instance.CheckNewBuildingInAreaCallback(NewBuilding, Position)) break;
++            }
++        }
++
+     }
+ 
+     // update the routefinding.
+Index: Assets/Scripts/World/SpawnAnimation/SpawnAnimationJump.cs
+===================================================================
+--- Assets/Scripts/World/SpawnAnimation/SpawnAnimationJump.cs	(revision 6413)
++++ Assets/Scripts/World/SpawnAnimation/SpawnAnimationJump.cs	(working copy)
+@@ -192,6 +192,12 @@
+ 
+             // go to end position
+             m_NewObject.GetComponent<TileCoordObject>().SetPosition(m_EndPosition);
++            
++            // Mod callback
++            if (!SaveLoadManager.Instance.m_Loading){
++                ModManager.Instance.CheckItemTypeSpawnedCallback(m_NewObject.m_UniqueID, m_NewObject.m_TypeIdentifier.ToString(), m_NewObject.GetComponent<TileCoordObject>().m_TileCoord);
++            }
++
+         }
+ 
+         if (m_DustLand)
+Index: Assets/Scripts/WorldObjects/Buildings/Building.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Building.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Building.cs	(working copy)
+@@ -476,7 +476,15 @@
+ 
+     public void SetName(string NewName)
+     {
++        bool NameChanged = m_Name != NewName;
++
+         m_Name = NewName;
++
++        // Mod callback
++        if (!SaveLoadManager.Instance.m_Loading && NameChanged)
++        {
++            ModManager.Instance.CheckBuildingEditedCallback(this, "Rename", m_Name);
++        }
+     }
+ 
+     override public void Save(JSONNode Node)
+@@ -743,6 +751,8 @@
+ 
+     virtual public void SetRotation(int Rotation)
+     {
++        bool RotationChanged = m_Rotation != Rotation;
++
+         m_Rotation = Rotation;
+ 
+         transform.localRotation = Quaternion.Euler(0, Rotation * 90.0f, 0);
+@@ -749,6 +759,12 @@
+ 
+         UpdateTiles();
+         TileCoordChanged(m_TileCoord);
++
++        // Mod Callback (if game not loading, if rotation changed)
++        if (!SaveLoadManager.Instance.m_Loading && RotationChanged)
++        {
++            ModManager.Instance.CheckBuildingEditedCallback(this, "Rotate");
++        }
+     }
+ 
+     public void GetBoundingRectangle(out TileCoord TopLeft, out TileCoord BottomRight)
+Index: Assets/Scripts/WorldObjects/Buildings/Converters/Converter.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Converters/Converter.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Converters/Converter.cs	(working copy)
+@@ -871,6 +871,9 @@
+                 StartConverting();
+                 break;
+         }
++
++        // Modding
++        ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, m_State.ToString());
+     }
+ 
+     protected void AddRequirements(List<IngredientRequirement> Requirements, List<IngredientRequirement> Results)
+Index: Assets/Scripts/WorldObjects/Buildings/Housing.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Housing.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Housing.cs	(working copy)
+@@ -809,6 +809,9 @@
+             ParticlesManager.Instance.DestroyParticles(NewParticles, true);
+             NewParticles.transform.localScale = new Vector3(Scale, Scale, Scale);
+             AudioManager.Instance.StartEvent("HouseRepaired", this);
++
++            // Modding
++            ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, "Idle");
+         }
+ 
+         return true;
+Index: Assets/Scripts/WorldObjects/Buildings/Research/ResearchStation.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Research/ResearchStation.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Research/ResearchStation.cs	(working copy)
+@@ -620,6 +620,9 @@
+ 
+         if (m_AnimControl)
+             m_AnimControl.UpdateState();
++
++        // Modding
++        ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, m_State.ToString());
+     }
+ 
+     public void ResumeResearch(Actionable ObjectInvolved)
+Index: Assets/Scripts/WorldObjects/Buildings/Storage/Storage.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Storage/Storage.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Storage/Storage.cs	(working copy)
+@@ -654,7 +654,7 @@
+                     NewBuilding.GetComponent<Storage>().SetObjectType(NewType);
+             }
+         }
+-
++        
+         if (!ObjectTypeList.m_Loading && ObjectCountManager.Instance)
+         {
+             // is this the first time we've set the object type or have we changed object type
+@@ -661,11 +661,17 @@
+             if (m_ObjectType != ObjectTypeList.m_Total && !m_Blueprint)
+             {
+                 if (OldType != m_ObjectType)
+-                    m_CountIndex = ObjectCountManager.Instance.RegisterNewObject(this);        // give it a unique count index
++                    m_CountIndex = ObjectCountManager.Instance.RegisterNewObject(this);        // give it a unique count index 
+             }
+             else
+                 m_CountIndex = 0;
+         }
++
++        // Mod callback
++        if (!ObjectTypeList.m_Loading && ObjectCountManager.Instance && OldType != m_ObjectType) {
++            string TypeString = ObjectTypeList.GetIDName(m_ObjectType);
++            ModManager.Instance.CheckStorageItemChangedCallback(m_UniqueID, TypeString);
++        }
+     }
+ 
+     override public Vector3 AddBuilding(Building NewBuilding)
+Index: Assets/Scripts/WorldObjects/Buildings/TrainRefuellingStation.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/TrainRefuellingStation.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/TrainRefuellingStation.cs	(working copy)
+@@ -167,6 +167,9 @@
+                     m_PlaySound = AudioManager.Instance.StartEvent("TrainRefuelling", this, true);
+                 break;
+         }
++
++        // Modding
++        ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, m_State.ToString());
+     }
+ 
+     // ************************* GetActionFromFuel *************************
+Index: Assets/Scripts/WorldObjects/Buildings/TranscendBuilding.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/TranscendBuilding.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/TranscendBuilding.cs	(working copy)
+@@ -272,6 +272,9 @@
+                 StartTranscending();
+                 break;
+         }
++
++        // Modding
++        ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, m_State.ToString());
+     }
+ 
+     void StartTranscending()
+Index: Assets/Scripts/WorldObjects/Buildings/Trough.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Trough.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Trough.cs	(working copy)
+@@ -99,6 +99,9 @@
+         else
+             m_HayModel.SetActive(true);
+         m_HayModel.GetComponent<MeshRenderer>().enabled = m_HayModel.activeSelf;
++
++        // Modding
++        ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, "Idle");
+     }
+ 
+     public bool EatHay()
+Index: Assets/Scripts/WorldObjects/Buildings/Wonders/Catapult.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Wonders/Catapult.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Wonders/Catapult.cs	(working copy)
+@@ -1,16 +1,16 @@
+-﻿using System.Collections;
+-using System.Collections.Generic;
+-using UnityEngine;
+-using SimpleJSON;
++﻿using System.Collections;
++using System.Collections.Generic;
++using UnityEngine;
++using SimpleJSON;
+ using System;
+-
+-public class Catapult : Wonder
+-{
+-    static int m_MaxTileDistance = 100;     // maximum throw distance in tiles
+-    static float m_FireDelay = 0.1f;
+-    static float m_ReleaseDelay = 1.0f;
+-    static float m_ResetDelay = 5.0f;
+-
++
++public class Catapult : Wonder
++{
++    static int m_MaxTileDistance = 100;     // maximum throw distance in tiles
++    static float m_FireDelay = 0.1f;
++    static float m_ReleaseDelay = 1.0f;
++    static float m_ResetDelay = 5.0f;
++
+     enum State
+     {
+         Idle,
+@@ -390,6 +390,9 @@
+     {
+         m_State = NewState;
+         m_StateTimer = 0;
++
++        // Modding
++        ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, m_State.ToString());
+     }
+ 
+     void UpdateFire()
+@@ -487,4 +490,4 @@
+ 
+         m_StateTimer += TimeManager.Instance.m_NormalDelta;
+     }
+-}
++}
+Index: Assets/Scripts/WorldObjects/Buildings/Wonders/SpacePort.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Wonders/SpacePort.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Wonders/SpacePort.cs	(working copy)
+@@ -479,6 +479,9 @@
+     {
+         m_State = NewState;
+         m_StateTimer = 0;
++
++        // Modding
++        ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, m_State.ToString());
+     }
+ 
+     void UpdateIncineratingAnimation()
+Index: Assets/Scripts/WorldObjects/Buildings/Wonders/StoneHeads.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Wonders/StoneHeads.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Wonders/StoneHeads.cs	(working copy)
+@@ -112,6 +112,9 @@
+     {
+         m_State = NewState;
+         m_StateTimer = 0;
++
++        // Modding
++        ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, m_State.ToString());
+     }
+ 
+     void UpdateIncineratingAnimation()
+Index: Assets/Scripts/WorldObjects/Buildings/Wonders/Wardrobe.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Wonders/Wardrobe.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Wonders/Wardrobe.cs	(working copy)
+@@ -1,10 +1,10 @@
+-﻿using System.Collections;
+-using System.Collections.Generic;
+-using UnityEngine;
+-using SimpleJSON;
+-
+-public class Wardrobe : Wonder
+-{
++﻿using System.Collections;
++using System.Collections.Generic;
++using UnityEngine;
++using SimpleJSON;
++
++public class Wardrobe : Wonder
++{
+     enum State
+     {
+         Idle,
+@@ -180,6 +180,9 @@
+     {
+         m_State = NewState;
+         m_StateTimer = 0;
++
++        // Modding
++        ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, m_State.ToString());
+     }
+ 
+     void UpdateChangingAnimation()
+@@ -235,4 +238,4 @@
+ 
+         m_StateTimer += TimeManager.Instance.m_NormalDelta;
+     }
+-}
++}
+Index: Assets/Scripts/WorldObjects/Buildings/Wonders/Ziggurat.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Buildings/Wonders/Ziggurat.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Buildings/Wonders/Ziggurat.cs	(working copy)
+@@ -164,6 +164,9 @@
+                 StartIncinerating();
+                 break;
+         }
++
++        // Modding
++        ModManager.Instance.CheckBuildingStateChangedCallback(m_UniqueID, m_State.ToString());
+     }
+ 
+     void StartIncinerating()
+Index: Assets/Scripts/WorldObjects/Farmer/Farmer.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Farmer/Farmer.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Farmer/Farmer.cs	(working copy)
+@@ -722,6 +722,10 @@
+ 
+         // update route finding as well
+         RouteFinding.UpdateTileWalk(m_TileCoord.x, m_TileCoord.y);
++
++        // Mod call for ENTERING a tile
++        if (GameStateManager.Instance && GameStateManager.Instance.GetActualState() == GameStateManager.State.Normal)
++            ModManager.Instance.CheckPlayerOrBotEnterOrExitTileCallback(Position, m_UniqueID);
+     }
+ 
+     override public void EndGoTo()
+Index: Assets/Scripts/WorldObjects/Farmer/FarmerCarry.cs
+===================================================================
+--- Assets/Scripts/WorldObjects/Farmer/FarmerCarry.cs	(revision 6413)
++++ Assets/Scripts/WorldObjects/Farmer/FarmerCarry.cs	(working copy)
+@@ -698,6 +698,9 @@
+             m_CarryObject[i].SendAction(new ActionInfo(ActionType.Dropped, m_Farmer.m_TileCoord, m_Farmer));
+ 
+             ObjectRemoved(m_CarryObject[i]);
++
++            // Mod callback
++            ModManager.Instance.CheckItemTypeSpawnedCallback(m_CarryObject[i].m_UniqueID, m_CarryObject[i].m_TypeIdentifier.ToString(), m_CarryObject[i].m_TileCoord);
+         }
+ 
+         m_CarryObject.Clear();
