@@ -703,7 +703,10 @@ function setSwitchState(switchUID, turnOn)
 	if turnOn then
 		if DEBUG_ENABLED then ModDebug.Log(' switch @ ' .. xy[1]  .. ':' .. xy[2] .. ' is ON.') end
 		if onSymbols == 0 then ModBase.SpawnItem('Switch On Symbol (SL)', xy[1], xy[2], false, true, false) end
-		if SWITCHES_TURNED_OFF[switchProps[5]] then SWITCHES_TURNED_OFF[switchProps[5]] = nil end
+		if SWITCHES_TURNED_OFF[switchProps[5]] then 
+			SWITCHES_TURNED_OFF[switchProps[5]] = nil
+			fireLinksBySwitchName(switchProps[5])
+		end
 	else
 		if DEBUG_ENABLED then ModDebug.Log(' switch @ ' .. xy[1]  .. ':' .. xy[2] .. ' is OFF.') end
 		if onSymbols > 0 then clearTypesInArea('Switch On Symbol (SL)', xy, xy) end
@@ -739,6 +742,17 @@ function arePlayerOrBotsOnTile(x, y)
 	return returnVal
 end
 
+function fireLinksBySwitchName(switchName)
+	local ms, me
+	for uid, props in pairs(LINK_UIDS) do
+		local ms, me = string.find(props.name,'.*sw%[.+%]') -- string.find('sw[48847]','.*sw%[.+%]') = 1, 9
+		if ms ~= nil and me ~= nil then 
+			if switchName == '>' .. string.sub(props.name, ms + 3, me - 1) then
+				fireLinkUID(uid)
+			end
+		end
+	end
+end
 
 
 
@@ -2140,7 +2154,7 @@ function transferFreightFromTransmitterToStorage(freightType, trxUID, toUID, lev
 	-- Get CURRENT levels! -- Prop = [1]=Object It Stores, [2]=Amount Stored, [3]=Capacity, [4]=Type Of Storage
 	local currentInputStorageProps = ModStorage.GetStorageProperties(fromUID)
 	local currentOutputStorageProps = ModStorage.GetStorageProperties(toUID)
-	
+
 	-- if either DO NOT EXIST, exit.
 	if currentInputStorageProps[2] == nil or currentOutputStorageProps[2] == nil then return totalTransferred end
 	
@@ -2212,13 +2226,15 @@ function transferFreightFromStorageToReceiver(txUID, freightType, fromUID, toRec
 	local rx = LINK_UIDS[toReceiverUID]
 	if rx == nil then return totalTransferred end
 	
+	-- Is receiver turned off
+	if linkIsSwitchedOff(rx.name) then return totalTransferred end
+
 	-- Grab source storage properties.
 	local currentInputStorageProps = ModStorage.GetStorageProperties(fromUID)
 	if currentInputStorageProps[2] <= 0 then return totalTransferred end
 	
 	-- If the 'toReceiverUID' has a storage, then we can use an existing function. :-)
 	if rx.outputStorageUID ~= nil then return transferFreightFromTransmitterToStorage(freightType, txUID, rx.outputStorageUID, levelCap, totalTransferred) end
-	
 	
 	-- Try as "fuel" (for all target kinds)
 	local fuelAmount = ModVariable.GetVariableForObjectAsInt(freightType, 'Fuel')
